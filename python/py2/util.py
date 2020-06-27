@@ -14,33 +14,57 @@ import os
 logging.basicConfig(level=logging.INFO, format='|%(asctime)s| %(filename)s[line:%(lineno)d] %(levelname)s %(message)s')
 
 
-def exe_cmd_system(cmd, exit=True, logger=logging):
+def exe_cmd_system(cmd, exit=True, logger=logging, debug=7):
     """
     exit参数：True表示cmd执行返回值不等于0报错并退出当前进程，False表示cmd执行返回值不等于0，忽略错误，并且继续执行
+    debug: 位图表示，缺省值为7；
+           1.显示cmd
+           2.显示warning日志信息
+           3.显示error日志信息
+           4.显示status
+           5.显示output
     """
-    logger.info('>>> [%s]' % cmd)
+    if debug & 1:
+        logger.info('>>> [%s]' % cmd)
     status, output = commands.getstatusoutput(cmd)
     if status != 0:
         if not exit:
-            logger.warning('>>> [%s] error, exit(0);\n error msg: %s' % (cmd, output))
+            if debug & 2:
+                logger.warning('>>> [%s] error, exit(0);\n error msg: %s' % (cmd, output))
         else:
-            logger.error('>>> [%s] error, exit(1);\n error msg: %s' % (cmd, output))
+            if debug & 4:
+                logger.error('>>> [%s] error, exit(1);\n error msg: %s' % (cmd, output))
             sys.exit(1)
+    if debug & 8:
+        logger.info('status=%s' % status)
+    if debug & 16:
+        logger.info('output=%s' % output)
     return status, output
 
 
-def exe_cmd_system_print_precess(cmd, exit=True, logger=logging):
+def exe_cmd_system_print_precess(cmd, exit=True, logger=logging, debug=7):
     """
     exit参数：True表示cmd执行返回值不等于0报错并退出当前进程，False表示cmd执行返回值不等于0，忽略错误，并且继续执行
+    debug: 位图表示，缺省值为7；
+           1.显示cmd
+           2.显示warning日志信息
+           3.显示error日志信息
+           4.显示status
+           5.显示output
     """
-    logger.info('>>> [%s]' % cmd)
+    if debug & 1:
+        logger.info('>>> [%s]' % cmd)
     status = os.system(cmd)
     if status != 0:
         if not exit:
-            logger.warning('>>> [%s] error, exit(0);' % (cmd))
+            if debug & 2:
+                logger.warning('>>> [%s] error, exit(0);' % cmd)
         else:
-            logger.error('>>> [%s] error, exit(1);' % (cmd))
+            if debug & 4:
+                logger.error('>>> [%s] error, exit(1);' % cmd)
             sys.exit(1)
+    if debug & 8:
+        logger.info('status=%s' % status)
     return status
 
 
@@ -199,22 +223,39 @@ class Hive(object):
         return True if status == 0 and int(output) > 0 else False
 
     @staticmethod
-    def del_partition(table, partition_key, partition_value, del_hdfs=True, exit=True, logger=logging):
-        hql = "ALTER TABLE %(table)s DROP IF EXISTS PARTITION (%(key)s=%(value)s);" % \
+    def del_partition(table, partition_key, partition_value, del_hdfs=True, exit=True, logger=logging, debug=7):
+        """
+        删除hive表分区
+        del_hdfs: True删除分区的hdfs数据, False只删除分区
+        """
+        hql = "ALTER TABLE %(table)s DROP IF EXISTS PARTITION (%(key)s='%(value)s');" % \
               {'table': table, 'key': partition_key, 'value': partition_value}
         cmd = 'hive -S -e \"%s\"' % hql
-        exe_cmd_system(cmd, exit, logger)
+        status, output = exe_cmd_system(cmd, exit, logger, debug)
+        if status != 0:
+            return False
+        if not del_hdfs:
+            return True
+        # 开始删除hive表分区的hdfs地址数据
+        table_path = Hive.get_table_hdfs(table, exit=False)
+        if table_path is None:
+            return False
+        table_path_full = '%s/%s=%s' % (table_path, partition_key, partition_value)
+        Hdfs.rm(table_path_full, skip_Trash=True, exit=True)
+        return True
 
     @staticmethod
-    def exe_hql(hql, static=False, exit=True, logger=logging):
+    def exe_hql(hql, static=False, exit=True, logger=logging, debug=7):
         """
         static: True打印mapreduce日志，False不打印mapreduce日志
         """
         cmd = 'hive -e \"%s\"' % hql
         if static:
             cmd = 'hive -S -e \"%s\"' % hql
-        status = exe_cmd_system_print_precess(cmd, exit, logger)
-        return status
+            status, output = exe_cmd_system(cmd, exit, logger, debug)
+            return True if status == 0 else False
+        status = exe_cmd_system_print_precess(cmd, exit, logger, debug)
+        return True if status == 0 else False
 
     @staticmethod
     def partition_num(table, exit=True, logger=logging):
@@ -237,6 +278,28 @@ class Hive(object):
             cmd = 'hive -S -e \"%s\"' % hql
         exe_cmd_system_print_precess(cmd, exit, logger)
 
+    @staticmethod
+    def get_table_hdfs(table, exit=True, logger=logging):
+        """
+        获取hive表实际存放的hdfs地址
+        """
+        hql = 'show create table %s;' % table
+        cmd = 'hive -S -e \"%s\"' % hql
+        status, output = exe_cmd_system(cmd, exit, logger)
+        if status != 0:
+            return None
+        key = 'LOCATION'
+        path = None
+        lines = output.split('\n')
+        i = -1
+        for i in range(len(lines)):
+            if lines[i] == key:
+                break
+        if i not in range(len(lines)):
+            return path
+        path = lines[i+1].strip().strip('\'')
+        return path
+
 
 if __name__ == '__main__':
     # mkdir('./test', exists=True)
@@ -246,6 +309,8 @@ if __name__ == '__main__':
     # cp('./util.py', '../py3')
     # Hdfs.file_exist('deeff')
     # Hive.del_partition('ads', 'dt', '2020-05-20')
-    Hive.msck('ad_search.midpage_re_purchase_base_data')
+    # Hive.msck('ad_search.midpage_re_purchase_base_data')
+    # print Hive.get_table_hdfs('ad_search.midpage_base_imp')
+    print Hive.del_partition('ad_search.midpage_re_purchase_base_data', 'dt', '2020-05-11')
     pass
 
